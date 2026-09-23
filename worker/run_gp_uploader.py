@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import tempfile
 import time
 from pathlib import Path
@@ -259,8 +260,8 @@ def _upload_one(row: dict[str, Any], *, origin: str, namevids_acc: dict[str, Any
                 api_key,
                 file_id,
                 title,
-                "-",
-                fallback_caption=CUSTOM_CAPTION,
+                CUSTOM_CAPTION,
+                fallback_caption="-",
                 fallback_title=vid,
             )
         _mark_published(
@@ -281,17 +282,27 @@ def _upload_one(row: dict[str, Any], *, origin: str, namevids_acc: dict[str, Any
 
 
 def _ensure_upload_account(conn, login_str: str, secret_str: str) -> dict[str, Any]:
+    fresh_seed = secrets.token_hex(16)
+    fresh_meta = json.dumps({"fa_seed": fresh_seed})
     conn.execute(
         """
-        INSERT INTO upload_accounts (provider, name, login, secret, is_enabled, priority, updated_at)
-        VALUES ('namevids', 'gp', %s, %s, 1, 10, now())
+        INSERT INTO upload_accounts (provider, name, login, secret, is_enabled, priority, metadata, updated_at)
+        VALUES ('namevids', 'gp', %s, %s, 1, 10, %s, now())
         ON CONFLICT (provider, name) DO UPDATE SET
+          metadata = CASE
+            WHEN upload_accounts.login <> EXCLUDED.login
+              OR upload_accounts.metadata IS NULL
+              OR upload_accounts.metadata = ''
+              OR upload_accounts.metadata = '{}'
+            THEN EXCLUDED.metadata
+            ELSE upload_accounts.metadata
+          END,
           login = EXCLUDED.login,
           secret = EXCLUDED.secret,
           is_enabled = 1,
           updated_at = now()
         """,
-        (login_str, secret_str),
+        (login_str, secret_str, fresh_meta),
     )
     row = conn.execute(
         """
