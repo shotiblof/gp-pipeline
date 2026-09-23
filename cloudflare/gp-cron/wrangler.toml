@@ -1,0 +1,10 @@
+name = "gp-cron"
+main = "src/index.ts"
+compatibility_date = "2024-06-01"
+
+# Same */5 grid as peach-cron; different slots so :02 never happens.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+GITHUB_REPO = "shotiblof/gp-pipeline"

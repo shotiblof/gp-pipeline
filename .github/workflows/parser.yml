@@ -1,0 +1,39 @@
+name: GP Parser (full)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: gp-parser-full
+  cancel-in-progress: false
+
+jobs:
+  parse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r worker/requirements.txt
+
+      - name: Apply DB migrations
+        env:
+          SHOTIBLOF_GITHUB_TOKEN: ${{ secrets.SHOTIBLOF_GITHUB_TOKEN }}
+          PIPELINE_DB_GITHUB_REPO: shotiblof/gp-pipeline-db
+          PIPELINE_DB_LOCAL_DIR: /tmp/gp-pipeline-db
+        working-directory: worker
+        run: python apply_migrations.py
+
+      - name: Run gayporno parser (full)
+        env:
+          SHOTIBLOF_GITHUB_TOKEN: ${{ secrets.SHOTIBLOF_GITHUB_TOKEN }}
+          PIPELINE_DB_GITHUB_REPO: shotiblof/gp-pipeline-db
+          PIPELINE_DB_LOCAL_DIR: /tmp/gp-pipeline-db
+          PARSER_MODE: full
+        working-directory: worker
+        run: python run_gp_parser.py

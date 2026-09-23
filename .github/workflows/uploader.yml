@@ -1,0 +1,44 @@
+name: GP Uploader
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: gp-uploader
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r worker/requirements.txt
+
+      - name: Apply DB migrations
+        env:
+          SHOTIBLOF_GITHUB_TOKEN: ${{ secrets.SHOTIBLOF_GITHUB_TOKEN }}
+          PIPELINE_DB_GITHUB_REPO: shotiblof/gp-pipeline-db
+          PIPELINE_DB_LOCAL_DIR: /tmp/gp-pipeline-db
+        working-directory: worker
+        run: python apply_migrations.py
+
+      - name: Run upload worker
+        env:
+          SHOTIBLOF_GITHUB_TOKEN: ${{ secrets.SHOTIBLOF_GITHUB_TOKEN }}
+          PIPELINE_DB_GITHUB_REPO: shotiblof/gp-pipeline-db
+          PIPELINE_DB_LOCAL_DIR: /tmp/gp-pipeline-db
+          PYTHONUNBUFFERED: "1"
+          GP_NAMEVIDS_LOGIN: ${{ secrets.GP_NAMEVIDS_LOGIN }}
+          GP_NAMEVIDS_PASSWORD: ${{ secrets.GP_NAMEVIDS_PASSWORD }}
+          UPLOADER_MAX_PER_RUN: "2"
+          NAMEVIDS_DAILY_CAP: "200"
+          UPLOADER_GAP_SEC: "30"
+        working-directory: worker
+        run: python run_gp_uploader.py
