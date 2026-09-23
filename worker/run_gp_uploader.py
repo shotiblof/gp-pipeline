@@ -1,6 +1,7 @@
 """gayporno → namevids uploader. Title only, full source mp4, custom caption."""
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
@@ -68,7 +69,24 @@ def _reset_stuck_uploading(conn) -> int:
     ids = [str(row["id"]) for row in cur.fetchall()]
     if ids:
         print(f"uploader: reset stuck uploading: {', '.join(ids)}")
-    return len(ids)
+
+    cur_fk = conn.execute(
+        """
+        UPDATE videos
+        SET status = 'parsed',
+            error_message = NULL,
+            updated_at = now()
+        WHERE status = 'failed'
+          AND id LIKE 'gp%%'
+          AND error_message LIKE '%%FOREIGN KEY%%'
+        RETURNING id
+        """
+    )
+    fk_ids = [str(row["id"]) for row in cur_fk.fetchall()]
+    if fk_ids:
+        print(f"uploader: reset foreign key failed videos: {', '.join(fk_ids)}")
+
+    return len(ids) + len(fk_ids)
 
 
 def _claim_videos(conn, limit: int) -> list[dict[str, Any]]:
@@ -262,6 +280,40 @@ def _upload_one(row: dict[str, Any], *, origin: str, namevids_acc: dict[str, Any
         nv_client.close()
 
 
+def _ensure_upload_account(conn, login_str: str, secret_str: str) -> dict[str, Any]:
+    conn.execute(
+        """
+        INSERT INTO upload_accounts (provider, name, login, secret, is_enabled, priority, updated_at)
+        VALUES ('namevids', 'gp', %s, %s, 1, 10, now())
+        ON CONFLICT (provider, name) DO UPDATE SET
+          login = EXCLUDED.login,
+          secret = EXCLUDED.secret,
+          is_enabled = 1,
+          updated_at = now()
+        """,
+        (login_str, secret_str),
+    )
+    row = conn.execute(
+        """
+        SELECT id, provider, name, login, secret, metadata
+        FROM upload_accounts
+        WHERE provider = 'namevids' AND name = 'gp'
+        """
+    ).fetchone()
+    if not row:
+        raise RuntimeError("Failed to resolve gp upload_account in upload_accounts")
+    data = dict(row)
+    meta = data.get("metadata")
+    if isinstance(meta, str) and meta.strip():
+        try:
+            data["metadata"] = json.loads(meta)
+        except Exception:
+            data["metadata"] = {}
+    elif not meta:
+        data["metadata"] = {}
+    return data
+
+
 def run_uploader() -> int:
     done = 0
     gp_login = os.environ.get("GP_NAMEVIDS_LOGIN", "").strip()
@@ -269,15 +321,9 @@ def run_uploader() -> int:
     
     if not gp_login or not gp_password:
         raise RuntimeError("GP_NAMEVIDS_LOGIN or GP_NAMEVIDS_PASSWORD missing in env")
-        
-    namevids_acc = {
-        "id": 999,
-        "login": gp_login,
-        "secret": gp_password,
-        "metadata": {}
-    }
 
     with db_conn() as conn:
+        namevids_acc = _ensure_upload_account(conn, gp_login, gp_password)
         origin = get_setting(conn, "gp.source_origin", "https://www.gayporno.fm").rstrip("/")
         _reset_stuck_uploading(conn)
         published_today = _namevids_published_today(conn, int(namevids_acc["id"]))
