@@ -105,11 +105,14 @@ def video_id(numeric: str | int) -> str:
 def parse_cards(html: str, *, category: str = "") -> list[ListCard]:
     cards: list[ListCard] = []
     seen: set[str] = set()
-    
-    # We need to correlate title/image/duration since they are in separate tags within a block.
-    # We will split by <div class="b-thumb-item">
-    blocks = html.split('<div class="b-thumb-item">')[1:]
-    
+
+    # Site uses class="b-thumb-item js-thumb" (extra classes break a literal split).
+    blocks = re.split(
+        r'<div[^>]*class="[^"]*\bb-thumb-item\b[^"]*"[^>]*>',
+        html,
+        flags=re.I,
+    )[1:]
+
     for block in blocks:
         item_match = ITEM_RE.search(block)
         if not item_match:
@@ -271,11 +274,12 @@ def _advance_category(conn: Any, cat_index: int) -> tuple[int, int]:
 def _parse_backlog(conn: Any, client: httpx.Client, origin: str, *, processed: int) -> int:
     cat_index, page = _load_backlog_cursor(conn)
     empty_streak = 0
+    backlog_done = False
     for _ in range(MAX_BACKLOG_PAGES):
-        if processed >= MAX_VIDEOS:
+        if processed >= MAX_VIDEOS or backlog_done:
             break
         if cat_index >= len(CATEGORIES):
-            cat_index, page = _advance_category(conn, cat_index)
+            _advance_category(conn, cat_index)
             break
 
         slug = CATEGORIES[cat_index]
@@ -285,6 +289,9 @@ def _parse_backlog(conn: Any, client: httpx.Client, origin: str, *, processed: i
             print(f"parser: {slug} page {page} 404 — end of category")
             cat_index, page = _advance_category(conn, cat_index)
             empty_streak = 0
+            if cat_index == 0 and page == 2:
+                # single-category catalog finished a full pass
+                backlog_done = True
             continue
 
         cards = parse_cards(html, category=slug)
@@ -297,8 +304,11 @@ def _parse_backlog(conn: Any, client: httpx.Client, origin: str, *, processed: i
         if not cards:
             empty_streak += 1
             if empty_streak >= MAX_EMPTY_PAGES:
+                print(f"parser: {slug} page {page} empty ×{empty_streak} — end of category")
                 cat_index, page = _advance_category(conn, cat_index)
                 empty_streak = 0
+                if cat_index == 0 and page == 2:
+                    backlog_done = True
                 continue
         else:
             empty_streak = 0
