@@ -72,6 +72,16 @@ def _fetch(client: httpx.Client, url: str) -> str:
     return res.text
 
 
+def _fetch_optional(client: httpx.Client, url: str) -> str | None:
+    """Like _fetch, but return None on 404 (end of category pagination)."""
+    _sleep()
+    res = client.get(url, timeout=30.0)
+    if res.status_code == 404:
+        return None
+    res.raise_for_status()
+    return res.text
+
+
 def _normalize_path(href: str) -> str:
     if href.startswith("/"):
         return href
@@ -98,7 +108,7 @@ def parse_cards(html: str, *, category: str = "") -> list[ListCard]:
     
     # We need to correlate title/image/duration since they are in separate tags within a block.
     # We will split by <div class="b-thumb-item">
-    blocks = html.split('<div class="b-thumb-item')[1:]
+    blocks = html.split('<div class="b-thumb-item">')[1:]
     
     for block in blocks:
         item_match = ITEM_RE.search(block)
@@ -246,6 +256,18 @@ def _save_backlog_cursor(conn: Any, cat_index: int, page: int, *, complete: bool
         pass
 
 
+def _advance_category(conn: Any, cat_index: int) -> tuple[int, int]:
+    cat_index += 1
+    page = 2
+    if cat_index >= len(CATEGORIES):
+        _save_backlog_cursor(conn, 0, 2, complete=True)
+        print("parser: gp backlog complete — cursor reset to page 2")
+        return 0, 2
+    _save_backlog_cursor(conn, cat_index, page)
+    print(f"parser: gp backlog advance to category index {cat_index}")
+    return cat_index, page
+
+
 def _parse_backlog(conn: Any, client: httpx.Client, origin: str, *, processed: int) -> int:
     cat_index, page = _load_backlog_cursor(conn)
     empty_streak = 0
@@ -253,14 +275,19 @@ def _parse_backlog(conn: Any, client: httpx.Client, origin: str, *, processed: i
         if processed >= MAX_VIDEOS:
             break
         if cat_index >= len(CATEGORIES):
-            _save_backlog_cursor(conn, 0, 2, complete=True)
-            print("parser: gp backlog complete")
+            cat_index, page = _advance_category(conn, cat_index)
             break
 
         slug = CATEGORIES[cat_index]
-        html = _fetch(client, abs_url(origin, category_list_path(slug, page)))
+        url = abs_url(origin, category_list_path(slug, page))
+        html = _fetch_optional(client, url)
+        if html is None:
+            print(f"parser: {slug} page {page} 404 — end of category")
+            cat_index, page = _advance_category(conn, cat_index)
+            empty_streak = 0
+            continue
+
         cards = parse_cards(html, category=slug)
-        before = processed
         for card in cards:
             if processed >= MAX_VIDEOS:
                 break
@@ -268,13 +295,10 @@ def _parse_backlog(conn: Any, client: httpx.Client, origin: str, *, processed: i
                 processed += 1
 
         if not cards:
-            # Reached end of pagination
             empty_streak += 1
             if empty_streak >= MAX_EMPTY_PAGES:
-                cat_index += 1
-                page = 2
+                cat_index, page = _advance_category(conn, cat_index)
                 empty_streak = 0
-                _save_backlog_cursor(conn, cat_index, page)
                 continue
         else:
             empty_streak = 0
@@ -298,10 +322,12 @@ def run_parser() -> int:
         if not parser_ingest_allowed(conn):
             return 0
         origin = get_setting(conn, "gp.source_origin", ORIGIN_DEFAULT).rstrip("/")
-        
+
         with httpx.Client(headers=HEADERS, follow_redirects=True) as client:
             if mode in ("latest", "full"):
                 processed = _parse_latest(conn, client, origin, processed=processed)
+                # Persist latest before backlog so a later 404 cannot drop new rows.
+                conn.commit()
             if mode in ("backlog", "full"):
                 processed = _parse_backlog(conn, client, origin, processed=processed)
         conn.commit()
